@@ -321,7 +321,10 @@ static uint32_t gx2_blend_factor(uint32_t m) {
 }
 static uint32_t gx2_blend_equation(uint32_t c) {
     switch (c) {
-    case 1: return wire::FUNC_SUBTRACT; case 2: return wire::FUNC_REVERSE_SUBTRACT; case 3: return wire::MIN; case 4: return wire::MAX;
+    // CB_BLENDn_CONTROL COMB_FCN (Cemu LatteReg E_COMBINEFUNC): 1 SRC_MINUS_DST,
+    // 2 MIN_DST_SRC, 3 MAX_DST_SRC, 4 DST_MINUS_SRC. splatoon-recomp: MIN/MAX and
+    // reverse subtract were shifted, so MAX (layout captures: alpha = max) became MIN.
+    case 1: return wire::FUNC_SUBTRACT; case 2: return wire::MIN; case 3: return wire::MAX; case 4: return wire::FUNC_REVERSE_SUBTRACT;
     default: return wire::FUNC_ADD;
     }
 }

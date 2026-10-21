@@ -88,6 +88,19 @@ static void OSReport(CPUState* cpu) {
     size_t length = strnlen(fmt, size_t(std::min<uint64_t>(256, cpu->guest_memory_size - ARG0)));
     while (length && fmt[length - 1] == '\n') --length;
     RBREW_LOGF(stderr, "[OSReport] %.*s [r4=%08X r5=%08X]\n", int(length), fmt, ARG1, ARG2);
+#if defined(SPLAT_RECOMP)
+    // splatoon-recomp: show the text of the first two string arguments
+    // (sead assertions report their message as OSReport("%s", message)).
+    const uint32_t args[2] = {ARG1, ARG2};
+    unsigned shown = 0;
+    for (const char* p = std::strstr(fmt, "%s"); p && p < fmt + length && shown < 2; p = std::strstr(p + 2, "%s"), ++shown) {
+        const uint32_t a = args[shown];
+        if (!a || !rbrew_memory_accessible(cpu->mem, a, 1)) continue;
+        const char* str = (const char*)(MEM + a);
+        RBREW_LOGF(stderr, "[OSReport]   %%s#%u = \"%.*s\"\n", shown + 1,
+                   int(strnlen(str, size_t(std::min<uint64_t>(512, cpu->guest_memory_size - a)))), str);
+    }
+#endif
 }
 static void OSPanic(CPUState* cpu)  {
     // OSPanic(const char* file, int line, const char* fmt, ...)
