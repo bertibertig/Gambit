@@ -147,6 +147,11 @@ target_include_directories(Gambit PRIVATE
 
 target_link_libraries(Gambit PRIVATE gambit_runtime)
 set_target_properties(Gambit PROPERTIES OUTPUT_NAME Splatoon)
+if(SPLAT_PORT_SOURCES)
+    # Only main.cpp: target-wide flags would rebuild the generated game code.
+    set_property(SOURCE main.cpp APPEND PROPERTY COMPILE_DEFINITIONS SPLAT_RECOMP=1)
+    set_property(SOURCE main.cpp APPEND PROPERTY INCLUDE_DIRECTORIES ${SPLAT_PORT_INCLUDE})
+endif()
 endif()
 if(WIN32)
     enable_language(RC)

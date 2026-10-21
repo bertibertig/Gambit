@@ -1,3 +1,7 @@
+#if defined(SPLAT_RECOMP)
+#include "splat_settings.h"
+#include <cstring>
+#endif
 #include "runtime/rbrew_diagnostics.h"
 // Gambit PC Port — main entry point
 //
@@ -383,6 +387,13 @@ void Gambit_data_init(uint8_t* arena);
 static int rbrew_game_main(int argc, char** argv) {
 #else
 int main(int argc, char** argv) {
+#endif
+#if defined(SPLAT_RECOMP)
+    // Splatoon Recompiled: `--settings` opens the graphics settings screen
+    // in the terminal first (src/port/splat_settings_tui.cpp).
+    for (int i = 1; i < argc; ++i)
+        if (std::strcmp(argv[i], "--settings") == 0 && !splat_settings_tui()) return 0;
+    splat_settings_load();
 #endif
 #if defined(_WIN32)
     (void)rbrew_configure_game_process();

@@ -164,13 +164,17 @@ static bool gx2_platform_open_window() {
     // Vulkan presentation: no GPU attributes or context. The device and
     // swapchain are created by gx2_render_init for this window; the present
     // mode avoids a second refresh wait (see gx2_vk.cpp create_swapchain).
+#if defined(SPLAT_RECOMP)
+    // Window mode and monitor from the settings (src/port/splat_settings).
+    int splat_x, splat_y, splat_w, splat_h;
+    uint32_t splat_flags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | splat_platform_window_flags();
+    splat_platform_window_rect(splat_x, splat_y, splat_w, splat_h, splat_flags);
+    s_window = SDL_CreateWindow("Splatoon | Vulkan | TV", splat_x, splat_y, splat_w, splat_h, splat_flags);
+#else
     s_window = SDL_CreateWindow("Splatoon | Vulkan | TV",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        1920, 1080, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE
-#if defined(SPLAT_RECOMP)
-            | splat_platform_window_flags()
+        1920, 1080, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
 #endif
-        );
     if (!s_window) {
         RBREW_LOGF(stderr, "[gx2] SDL_CreateWindow(SDL_WINDOW_VULKAN) failed: %s\n", SDL_GetError());
         return false;
