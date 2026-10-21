@@ -389,10 +389,10 @@ static int rbrew_game_main(int argc, char** argv) {
 int main(int argc, char** argv) {
 #endif
 #if defined(SPLAT_RECOMP)
-    // Splatoon Recompiled: `--settings` opens the graphics settings screen
-    // in the terminal first (src/port/splat_settings_tui.cpp).
-    for (int i = 1; i < argc; ++i)
-        if (std::strcmp(argv[i], "--settings") == 0 && !splat_settings_tui()) return 0;
+    // Splatoon Recompiled: `--settings` opens the settings screen in the
+    // terminal first (src/port/splat_settings_tui.cpp), `--language <code>`
+    // picks the game's language for this run.
+    if (const int code = splat_settings_args(argc, argv); code >= 0) return code;
     splat_settings_load();
 #endif
 #if defined(_WIN32)
