@@ -369,7 +369,7 @@ static void VPADRead(CPUState* cpu) {
     }
 
 #if defined(SPLAT_RECOMP)
-    // Splatoon Recompiled: PC keyboard + mouse layout (src/port/splat_input).
+    // Splatoon Recompiled: PC keyboard + mouse layout (port/splat/splat_input).
     // The keyboard works in both views; the mouse aims in the TV view and is
     // the touch screen in the GamePad view.
     SplatPadInput splat_kbm;

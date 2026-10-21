@@ -16,6 +16,16 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/gx2_graphics_backend.cmake)
 if(NOT TARGET ZLIB::ZLIB)
     find_package(ZLIB REQUIRED)
 endif()
+# Linux with GCC / Clang (after the fetched dependencies, which must not see
+# it): the headers and intrinsics MSVC provides implicitly
+# (cmake/linux_compat.h) and SSSE3/SSE4 for the intrinsics the renderer uses
+# without target attributes (x86-64-v2: any x86-64 CPU since about 2009).
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT MSVC)
+    add_compile_options("SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/../cmake/linux_compat.h")
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+        add_compile_options(-march=x86-64-v2)
+    endif()
+endif()
 add_subdirectory(third_party/cemu_shader)
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/miniaudio.h")
@@ -79,10 +89,16 @@ if(NOT RBREW_DIAGNOSTIC_RUNTIME)
 endif()
 rbrew_gx2_backend(gambit_runtime PUBLIC)
 
-# Splatoon Recompiled (bertibertig/splatoon-recomp): extra runtime sources
-# that live outside this tree (src/port), passed in by its build script.
-set(SPLAT_PORT_SOURCES "" CACHE STRING "Additional runtime sources (splatoon-recomp)")
-set(SPLAT_PORT_INCLUDE "" CACHE PATH "Include directory of SPLAT_PORT_SOURCES")
+# Splatoon Recompiled additions (port/splat): keyboard + mouse aim, native
+# Wayland, settings screen, resolution scaling, language. SPLAT_RECOMP=OFF
+# builds the original Gambit runtime.
+option(SPLAT_RECOMP "Build the Splatoon Recompiled additions (port/splat)" ON)
+if(SPLAT_RECOMP)
+    file(GLOB SPLAT_PORT_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/splat/*.cpp)
+    set(SPLAT_PORT_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR}/splat)
+else()
+    set(SPLAT_PORT_SOURCES "")
+endif()
 if(SPLAT_PORT_SOURCES)
     target_sources(gambit_runtime PRIVATE ${SPLAT_PORT_SOURCES})
     target_include_directories(gambit_runtime PRIVATE ${SPLAT_PORT_INCLUDE})

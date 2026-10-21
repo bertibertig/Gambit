@@ -390,7 +390,7 @@ int main(int argc, char** argv) {
 #endif
 #if defined(SPLAT_RECOMP)
     // Splatoon Recompiled: `--settings` opens the settings screen in the
-    // terminal first (src/port/splat_settings_tui.cpp), `--language <code>`
+    // terminal first (port/splat/splat_settings_tui.cpp), `--language <code>`
     // picks the game's language for this run.
     if (const int code = splat_settings_args(argc, argv); code >= 0) return code;
     splat_settings_load();

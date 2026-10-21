@@ -165,7 +165,7 @@ static bool gx2_platform_open_window() {
     // swapchain are created by gx2_render_init for this window; the present
     // mode avoids a second refresh wait (see gx2_vk.cpp create_swapchain).
 #if defined(SPLAT_RECOMP)
-    // Window mode and monitor from the settings (src/port/splat_settings).
+    // Window mode and monitor from the settings (port/splat/splat_settings).
     int splat_x, splat_y, splat_w, splat_h;
     uint32_t splat_flags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | splat_platform_window_flags();
     splat_platform_window_rect(splat_x, splat_y, splat_w, splat_h, splat_flags);
