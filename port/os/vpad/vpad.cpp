@@ -27,6 +27,9 @@
 #include "../../runtime/screen_mode.h"
 #include "../../runtime/native_control_defaults.h"
 #include "../../runtime/input_bindings.h"
+#if defined(SPLAT_RECOMP)
+#include "splat_input.h"
+#endif
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -99,6 +102,20 @@ static constexpr float KBM_MOUSE_SENSITIVITY = 0.005f;
 // no progression or tutorial-completion flags are changed.
 void vpad_apply_motion_policy(uint8_t* mem) {
     rbrew_control_defaults::apply_live(mem);
+#if defined(SPLAT_RECOMP)
+    // Splatoon Recompiled: the mouse aims through the gyro, so the live
+    // GamePad options keep motion controls on with neutral sensitivity in
+    // every scene (the saved options stay as Gambit writes them).
+    if (!splat_input_mouse_aim() || spl_controls::installed().controller_mode) return;
+    if (rbrew_control_defaults::active_scene_type(mem) < 0) return;
+    constexpr uint32_t kControlManager = 0x101C1D34u;
+    const uint32_t manager = rbrew_read32(mem, kControlManager);
+    if (!manager || uint64_t(manager) + 0x184 > WIIU_MEM_SIZE ||
+        !rbrew_memory_accessible(mem, manager + 0x17C, 8)) return;
+    if (rbrew_read32(mem, manager + 0x17C) != rbrew_control_defaults::kSensitivityBits)
+        rbrew_write32(mem, manager + 0x17C, rbrew_control_defaults::kSensitivityBits);
+    if (mem[manager + 0x182] != 1) rbrew_write8(mem, manager + 0x182, 1);
+#endif
 }
 
 // Write a VPADTouchData entry (8 bytes, big-endian u16 fields) at 'base'.
@@ -174,15 +191,13 @@ static VirtualMotion s_motion;
 static constexpr float kPi = 3.14159265358979f;
 static constexpr float kYawRate = 240.0f, kPitchRate = 150.0f, kPitchLimit = 80.0f;  // degrees(/s)
 
-// Advances the virtual GamePad by dt seconds of right-stick input and writes
+// Rotates the virtual GamePad by yaw/pitch degrees over dt seconds and writes
 // acc/gyro/angle/direction into the VPADStatus at buf.
-void vpad_update_motion(uint8_t* mem, uint32_t buf, float rx, float ry, float dt) {
-    std::lock_guard lock(s_motion_lock);
+static void vpad_apply_motion(uint8_t* mem, uint32_t buf, float yaw_delta, float pitch_delta, float dt) {
     VirtualMotion& v = s_motion;
-    // Squared response keeps small deflections precise.
-    const float yaw_rate = -rx * std::fabs(rx) * kYawRate, pitch_rate = -ry * std::fabs(ry) * kPitchRate;
-    v.yaw = std::fmod(v.yaw + yaw_rate * dt, 360.0f);
-    const float pitch = std::fmax(-kPitchLimit, std::fmin(kPitchLimit, v.pitch + pitch_rate * dt));
+    const float yaw_rate = dt > 0 ? yaw_delta / dt : 0.0f;
+    v.yaw = std::fmod(v.yaw + yaw_delta, 360.0f);
+    const float pitch = std::fmax(-kPitchLimit, std::fmin(kPitchLimit, v.pitch + pitch_delta));
     const float applied_pitch_rate = dt > 0 ? (pitch - v.pitch) / dt : 0.0f;
     v.pitch = pitch;
     const Mat3 r = mat_mul(mat_mul(rotation_y(v.yaw * kPi / 180), v.base), rotation_x(v.pitch * kPi / 180));
@@ -206,6 +221,21 @@ void vpad_update_motion(uint8_t* mem, uint32_t buf, float rx, float ry, float dt
     write_float(mem, buf + 0x28, 1.0f);  // accMagnitude: gravity only
     write_float(mem, buf + kVpadAccXY, 1.0f);
 }
+// Advances the virtual GamePad by dt seconds of right-stick input.
+void vpad_update_motion(uint8_t* mem, uint32_t buf, float rx, float ry, float dt) {
+    std::lock_guard lock(s_motion_lock);
+    // Squared response keeps small deflections precise.
+    const float yaw_rate = -rx * std::fabs(rx) * kYawRate, pitch_rate = -ry * std::fabs(ry) * kPitchRate;
+    vpad_apply_motion(mem, buf, yaw_rate * dt, pitch_rate * dt, dt);
+}
+#if defined(SPLAT_RECOMP)
+// Splatoon Recompiled: mouse aim. The mouse turns the virtual GamePad by
+// exact angles (yaw > 0 = right, pitch > 0 = up): no curve, no deadzone.
+static void vpad_update_motion_mouse(uint8_t* mem, uint32_t buf, float yaw_deg, float pitch_deg, float dt) {
+    std::lock_guard lock(s_motion_lock);
+    vpad_apply_motion(mem, buf, -yaw_deg, -pitch_deg, dt > 0 ? dt : 1.0f / 60.0f);
+}
+#endif
 static float motion_seconds() {
     const uint64_t now = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count());
@@ -338,9 +368,25 @@ static void VPADRead(CPUState* cpu) {
         shape_stick(lx,ly);shape_stick(rx,ry);
     }
 
+#if defined(SPLAT_RECOMP)
+    // Splatoon Recompiled: PC keyboard + mouse layout (src/port/splat_input).
+    // The keyboard works in both views; the mouse aims in the TV view and is
+    // the touch screen in the GamePad view.
+    SplatPadInput splat_kbm;
+    bool splat_mouse_motion=false;
+    if(!bindings.controller_mode) {
+        splat_input_read(splat_kbm,g_screen_mode==ScreenMode::TV);
+        buttons|=splat_kbm.buttons;
+        if(splat_kbm.lx||splat_kbm.ly){lx=splat_kbm.lx;ly=splat_kbm.ly;}
+        if(splat_kbm.rx||splat_kbm.ry){rx=splat_kbm.rx;ry=splat_kbm.ry;}
+        splat_mouse_motion=splat_input_mouse_aim();
+    }
+    if(false) {
+#else
     // Keyboard/mouse overlay is active only on the TV output; GamePad view
     // continues to use the mouse for simulated touch input.
     if(g_screen_mode==ScreenMode::TV) {
+#endif
         const Uint8* keys=SDL_GetKeyboardState(nullptr);
         int mx=0,my=0;
         const Uint32 mouse=SDL_GetMouseState(&mx,&my);
@@ -397,6 +443,11 @@ static void VPADRead(CPUState* cpu) {
     write_float(MEM, buf + 0x14, rx);
     write_float(MEM, buf + 0x18, ry);
 
+#if defined(SPLAT_RECOMP) && defined(HAVE_SDL2)
+    if (splat_mouse_motion)
+        vpad_update_motion_mouse(MEM, buf, splat_kbm.yaw_deg, splat_kbm.pitch_deg, motion_seconds());
+    else
+#endif
     vpad_update_motion(MEM, buf, rx, ry, motion_seconds());
     rbrew_write8(MEM, buf + kVpadSlideVolume, 0xFF);
     rbrew_write8(MEM, buf + kVpadSlideVolumeEx, 0xFF);

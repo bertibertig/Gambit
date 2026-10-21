@@ -63,7 +63,7 @@ static void update_window_title() {
     if (!s_window) return;
     constexpr const char* backend = "Vulkan";
     char title[192];
-    std::snprintf(title, sizeof(title), "Splatoon | %s | %s | %.1f FPS  (Tab = switch | F11 = fullscreen)",
+    std::snprintf(title, sizeof(title), "Splatoon | %s | %s | %.1f FPS  (Tab = switch | F10 = mouse | F11 = fullscreen)",
                   backend, g_screen_mode == ScreenMode::TV ? "TV" : "Gamepad", s_window_fps);
     SDL_SetWindowTitle(s_window, title);
 }
@@ -76,7 +76,11 @@ static void toggle_screen_mode() {
         g_touch_state = { false, 0, 0 };
     } else {
         g_screen_mode = ScreenMode::TV;
+#if defined(SPLAT_RECOMP)
+        splat_platform_apply_capture(true);
+#else
         SDL_SetRelativeMouseMode(spl_controls::installed().mouse_camera ? SDL_TRUE : SDL_FALSE);  // capture cursor for camera
+#endif
         g_touch_state = { false, 0, 0 };
     }
     update_window_title();
@@ -199,7 +203,11 @@ static bool gx2_platform_open_window() {
     SDL_RaiseWindow(s_window);
     SDL_PumpEvents();
     SDL_FlushEvents(SDL_FIRSTEVENT, SDL_LASTEVENT);
+#if defined(SPLAT_RECOMP)
+    splat_platform_apply_capture(true);
+#else
     SDL_SetRelativeMouseMode(spl_controls::installed().mouse_camera ? SDL_TRUE : SDL_FALSE);
+#endif
     SDL_PumpEvents();
     SDL_FlushEvents(SDL_FIRSTEVENT, SDL_LASTEVENT);
     g_screen_mode = ScreenMode::TV;
@@ -537,6 +545,9 @@ static void GX2SwapScanBuffers(CPUState* cpu) {
         // Pump SDL events first
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
+#if defined(SPLAT_RECOMP)
+            if (splat_platform_event(ev, g_screen_mode == ScreenMode::TV)) continue;
+#endif
             switch (ev.type) {
             case SDL_QUIT:
                 gx2_close_requested();
