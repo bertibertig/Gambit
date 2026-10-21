@@ -10,6 +10,9 @@
 #include "../../runtime/screen_mode.h"
 #if defined(HAVE_SDL2)
 #include "../../runtime/input_bindings.h"
+#if defined(SPLAT_RECOMP)
+#include "splat_platform.h"
+#endif
 #endif
 #include "gx2_render.h"
 #include "gx2_pm4_state.h"
@@ -147,6 +150,9 @@ static bool gx2_platform_open_window() {
     SDL_SetHint(SDL_HINT_GAMECONTROLLER_USE_BUTTON_LABELS, "0");
     // Keep reading the controller while another window has focus.
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+#if defined(SPLAT_RECOMP)
+    splat_platform_init();
+#endif
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0) {
         RBREW_LOGF(stderr, "[gx2] SDL_Init failed: %s\n", SDL_GetError());
         return false;
@@ -156,7 +162,11 @@ static bool gx2_platform_open_window() {
     // mode avoids a second refresh wait (see gx2_vk.cpp create_swapchain).
     s_window = SDL_CreateWindow("Splatoon | Vulkan | TV",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        1920, 1080, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
+        1920, 1080, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE
+#if defined(SPLAT_RECOMP)
+            | splat_platform_window_flags()
+#endif
+        );
     if (!s_window) {
         RBREW_LOGF(stderr, "[gx2] SDL_CreateWindow(SDL_WINDOW_VULKAN) failed: %s\n", SDL_GetError());
         return false;
@@ -171,6 +181,9 @@ static bool gx2_platform_open_window() {
             SendMessageW(window_info.info.win.window, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icon));
         }
     }
+#endif
+#if defined(SPLAT_RECOMP)
+    splat_platform_report();
 #endif
     gx2_native_set_context(s_window, nullptr);
     s_window_thread = SDL_ThreadID();

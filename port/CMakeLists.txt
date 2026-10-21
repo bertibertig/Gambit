@@ -79,6 +79,17 @@ if(NOT RBREW_DIAGNOSTIC_RUNTIME)
 endif()
 rbrew_gx2_backend(gambit_runtime PUBLIC)
 
+# Splatoon Recompiled (bertibertig/splatoon-recomp): extra runtime sources
+# that live outside this tree (src/port), passed in by its build script.
+set(SPLAT_PORT_SOURCES "" CACHE STRING "Additional runtime sources (splatoon-recomp)")
+set(SPLAT_PORT_INCLUDE "" CACHE PATH "Include directory of SPLAT_PORT_SOURCES")
+if(SPLAT_PORT_SOURCES)
+    target_sources(gambit_runtime PRIVATE ${SPLAT_PORT_SOURCES})
+    target_include_directories(gambit_runtime PRIVATE ${SPLAT_PORT_INCLUDE})
+    # PRIVATE: keeps the generated game objects untouched (no rebuild).
+    target_compile_definitions(gambit_runtime PRIVATE SPLAT_RECOMP=1)
+endif()
+
 if(HAVE_MINIAUDIO)
     target_compile_definitions(gambit_runtime PUBLIC HAVE_MINIAUDIO)
     target_include_directories(gambit_runtime PRIVATE
