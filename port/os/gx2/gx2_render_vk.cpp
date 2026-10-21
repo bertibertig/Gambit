@@ -20,6 +20,9 @@
 #include "vk/gx2_render_vk_state.h"
 #include "vk/gx2_vk_shader.h"
 #include "gx2_host_memory.h"
+#if defined(SPLAT_RECOMP)
+#include "splat_render.h"
+#endif
 #include "../os_common.h"
 #define SDL_MAIN_HANDLED
 #include <SDL.h>
@@ -559,8 +562,15 @@ void gx2_render_set_color_buffer(uint32_t cb_addr, uint8_t* mem, const uint8_t* 
         if (w == 0) w = 1920;
         if (h == 0) h = 1080;
         w = std::max(1u, w >> std::min(key[5], 31u)); h = std::max(1u, h >> std::min(key[5], 31u));
+        uint32_t scale = 1;
+#if defined(SPLAT_RECOMP)
+        // Resolution scaling: screen-chain targets get scale x the pixels.
+        if (key[5] == 0 && !gx2_vk_format(fmt).compressed) scale = splat_target_scale(w, h);
+#endif
+        w *= scale; h *= scale;
         ColorTarget e;
         e.width = w; e.height = h; e.gx2_format = fmt; e.fmt = gx2_vk_format(fmt);
+        e.scale = scale; e.tex.splat_scale = float(scale);
         e.id = S.next_object_id++;
         gx2vk::ImageDesc desc;
         desc.format = e.fmt.format;
@@ -608,6 +618,10 @@ void gx2_render_set_depth_buffer(uint32_t db_addr, uint8_t* mem, const uint8_t* 
     if (inserted) {
         const uint32_t mip = key[5];
         e.width = std::max(1u, key[2] >> std::min(mip, 31u)); e.height = std::max(1u, key[3] >> std::min(mip, 31u));
+#if defined(SPLAT_RECOMP)
+        if (mip == 0) e.scale = splat_target_scale(e.width, e.height);
+        e.width *= e.scale; e.height *= e.scale;
+#endif
         const bool float_stencil = key[1] == 0x81Cu;
         const bool stencil = (key[1] & 63u) == 0x11u || float_stencil;
         e.stencil = stencil;
@@ -627,6 +641,7 @@ void gx2_render_set_depth_buffer(uint32_t db_addr, uint8_t* mem, const uint8_t* 
         e.tex.target = wire::TEXTURE_2D;
         e.tex.view_format = e.format;
         e.tex.levels = 1; e.tex.layers = 1; e.tex.depth = true;
+        e.tex.splat_scale = float(e.scale);
         // Each native depth view owns one selected mip; NEAREST, max level 0.
         e.tex.params = render_target_params(true);
         e.tex.id = e.id;
@@ -695,9 +710,10 @@ static void clear_bound(bool color, bool depth, bool stencil) {
     rect.layerCount = 1;
     rect.rect = area;
     if (S.raster.scissor_test) {
-        const int32_t x0 = std::max(S.raster.scissor[0], 0), y0 = std::max(S.raster.scissor[1], 0);
-        const int32_t x1 = std::min<int32_t>(S.raster.scissor[0] + S.raster.scissor[2], int32_t(area.extent.width));
-        const int32_t y1 = std::min<int32_t>(S.raster.scissor[1] + S.raster.scissor[3], int32_t(area.extent.height));
+        const int32_t fs = int32_t(framebuffer_scale(S.framebuffer));   // scissor is in console pixels
+        const int32_t x0 = std::max(S.raster.scissor[0], 0) * fs, y0 = std::max(S.raster.scissor[1], 0) * fs;
+        const int32_t x1 = std::min<int32_t>((S.raster.scissor[0] + S.raster.scissor[2]) * fs, int32_t(area.extent.width));
+        const int32_t y1 = std::min<int32_t>((S.raster.scissor[1] + S.raster.scissor[3]) * fs, int32_t(area.extent.height));
         if (x1 <= x0 || y1 <= y0) return;
         rect.rect = {{x0, y0}, {uint32_t(x1 - x0), uint32_t(y1 - y0)}};
     }
@@ -1284,6 +1300,17 @@ void gx2_render_upload_texture(uint32_t tex_addr, uint32_t slot, uint8_t* mem, c
                 region.srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
                 region.dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, key[5], key[6] - first_slice, 1};
                 region.extent = {depth.width, depth.height, 1};
+#if defined(SPLAT_RECOMP)
+                if (depth.scale != 1) {
+                    // Scaled depth slice into console-size array storage.
+                    VkImageBlit blit{};
+                    blit.srcSubresource = region.srcSubresource;
+                    blit.srcOffsets[1] = {int32_t(depth.width), int32_t(depth.height), 1};
+                    blit.dstSubresource = region.dstSubresource;
+                    blit.dstOffsets[1] = {int32_t(depth.width / depth.scale), int32_t(depth.height / depth.scale), 1};
+                    vkCmdBlitImage(cb, depth.image.image, VK_IMAGE_LAYOUT_GENERAL, entry.image.image, VK_IMAGE_LAYOUT_GENERAL, 1, &blit, VK_FILTER_NEAREST);
+                } else
+#endif
                 vkCmdCopyImage(cb, depth.image.image, VK_IMAGE_LAYOUT_GENERAL, entry.image.image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
                 live_copy_recorded(entry, depth);
                 if (g_trace_active || shadow_log())
@@ -1352,6 +1379,7 @@ void gx2_render_upload_texture(uint32_t tex_addr, uint32_t slot, uint8_t* mem, c
                 view.tex.params.max_level = 1000;   // glTextureView with one level
             }
             view.tex.swizzle = word4;
+            view.tex.splat_scale = cb.tex.splat_scale;   // splatoon-recomp: same storage
             bind_unit(slot, &view.tex);
             return;
         }
@@ -1505,6 +1533,21 @@ void gx2_render_upload_texture(uint32_t tex_addr, uint32_t slot, uint8_t* mem, c
             region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, key[5], is3d ? 0u : key[6] - first_slice, 1};
             region.dstOffset = {0, 0, is3d ? int32_t(key[6] - first_slice) : 0};
             region.extent = {std::min(cb.width, std::max(1u, w >> key[5])), std::min(cb.height, std::max(1u, h >> key[5])), 1};
+#if defined(SPLAT_RECOMP)
+            if (cb.scale != 1) {
+                // Scaled render target into console-size array / volume storage.
+                const uint32_t gw = std::min(cb.width / cb.scale, std::max(1u, w >> key[5]));
+                const uint32_t gh = std::min(cb.height / cb.scale, std::max(1u, h >> key[5]));
+                VkImageBlit blit{};
+                blit.srcSubresource = region.srcSubresource;
+                blit.srcOffsets[1] = {int32_t(gw * cb.scale), int32_t(gh * cb.scale), 1};
+                blit.dstSubresource = region.dstSubresource;
+                blit.dstOffsets[0] = region.dstOffset;
+                blit.dstOffsets[1] = {int32_t(gw), int32_t(gh), region.dstOffset.z + 1};
+                vkCmdBlitImage(cbuf, cb.image.image, VK_IMAGE_LAYOUT_GENERAL, entry.image.image, VK_IMAGE_LAYOUT_GENERAL, 1, &blit,
+                               cb.fmt.integer ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
+            } else
+#endif
             vkCmdCopyImage(cbuf, cb.image.image, VK_IMAGE_LAYOUT_GENERAL, entry.image.image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
             live_copy_recorded(entry, cb);
             copied = true;
@@ -1625,6 +1668,32 @@ std::optional<CpuCopyLevel> cpu_copy_level(const uint8_t* surface, uint32_t mip,
     return level;
 }
 
+#if defined(SPLAT_RECOMP)
+// splatoon-recomp: blits level 0 between a scaled render target and a
+// console-size scratch image (CPU readback / upload of scaled targets).
+bool splat_scaled_scratch(gx2vk::Image& target, uint32_t scale, gx2vk::Image& scratch, bool to_scratch, bool integer) {
+    gx2vk::ImageDesc desc;
+    desc.format = target.desc.format;
+    desc.width = std::max(1u, target.desc.width / scale); desc.height = std::max(1u, target.desc.height / scale);
+    desc.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    if (!scratch.image && !gx2vk::create_image(scratch, desc)) return false;
+    end_rendering();
+    VkCommandBuffer cb = gx2vk::cmd();
+    gx2vk::barrier_if_dirty();
+    VkImageBlit blit{};
+    blit.srcSubresource = blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    const VkOffset3D big{int32_t(target.desc.width), int32_t(target.desc.height), 1};
+    const VkOffset3D small{int32_t(desc.width), int32_t(desc.height), 1};
+    blit.srcOffsets[1] = to_scratch ? big : small;
+    blit.dstOffsets[1] = to_scratch ? small : big;
+    vkCmdBlitImage(cb, (to_scratch ? target : scratch).image, VK_IMAGE_LAYOUT_GENERAL, (to_scratch ? scratch : target).image,
+                   VK_IMAGE_LAYOUT_GENERAL, 1, &blit, integer ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
+    gx2vk::note_gpu_write(to_scratch ? scratch : target);
+    gx2vk::full_barrier();
+    return true;
+}
+#endif
+
 bool copy_cpu_surface(const uint8_t* src, uint32_t src_mip, uint32_t src_slice, const uint8_t* dst, uint32_t dst_mip,
                       uint32_t dst_slice, uint8_t* mem) {
     const auto source = cpu_copy_level(src, src_mip, src_slice, mem), destination = cpu_copy_level(dst, dst_mip, dst_slice, mem);
@@ -1647,6 +1716,16 @@ bool copy_cpu_surface(const uint8_t* src, uint32_t src_mip, uint32_t src_slice, 
         if (sd.is_depth || vf.depth || vf.compressed) return false;
         Gx2PerfScope readback(kPerfTexReadback);
         end_rendering();
+#if defined(SPLAT_RECOMP)
+        if (live->scale != 1) {
+            // The guest sees the console-size surface: read a downscaled copy.
+            gx2vk::Image scratch;
+            const bool ok = splat_scaled_scratch(live->image, live->scale, scratch, true, vf.integer) &&
+                gx2vk::read_image(scratch, VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, scratch.desc.width, scratch.desc.height, linear);
+            gx2vk::destroy_image(scratch);
+            if (!ok) return false;
+        } else
+#endif
         if (!gx2vk::read_image(live->image, VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, live->width, live->height, linear)) return false;
         if (linear.size() < bytes) return false;
         linear.resize(bytes);
@@ -1676,6 +1755,23 @@ bool copy_cpu_surface(const uint8_t* src, uint32_t src_mip, uint32_t src_slice, 
             key[4] != descriptor_word(dst, GX2SURF_PITCH) || key[5] != dst_mip || key[6] != dst_slice || std::max(1u, key[7]) != 1) continue;
         if (vf.compressed || dd.is_depth) return false;
         auto& cb = const_cast<ColorTarget&>(cbc);
+#if defined(SPLAT_RECOMP)
+        if (cb.scale != 1) {
+            // Upload the console-size bytes, then scale them into the target.
+            gx2vk::Image scratch;
+            gx2vk::ImageDesc desc;
+            desc.format = cb.image.desc.format;
+            desc.width = cb.width / cb.scale; desc.height = cb.height / cb.scale;
+            desc.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+            const size_t small_bytes = size_t(desc.width) * desc.height * vf.bpp;
+            if (small_bytes <= linear.size() && gx2vk::create_image(scratch, desc)) {
+                upload_image_level(scratch, 0, 0, 1, desc.width, desc.height, 1, linear.data(), small_bytes, VK_IMAGE_ASPECT_COLOR_BIT);
+                splat_scaled_scratch(cb.image, cb.scale, scratch, false, vf.integer);
+            }
+            gx2vk::destroy_image(scratch);
+            continue;
+        }
+#endif
         const size_t view_bytes = size_t(cb.width) * cb.height * vf.bpp;
         if (view_bytes <= linear.size()) upload_image_level(cb.image, 0, 0, 1, cb.width, cb.height, 1, linear.data(), view_bytes, VK_IMAGE_ASPECT_COLOR_BIT);
     }
@@ -1737,9 +1833,14 @@ void gx2_render_copy_surface(const uint8_t* src, uint32_t src_mip, uint32_t src_
     else { gx2_render_set_color_buffer(1, mem, dw.data(), 0); destination_color = S.color_targets[0]; }
     const uint32_t width = std::min(std::max(1u, sk[2] >> src_mip), std::max(1u, dk[2] >> dst_mip));
     const uint32_t height = std::min(std::max(1u, sk[3] >> src_mip), std::max(1u, dk[3] >> dst_mip));
+    // splatoon-recomp: resolution scale of both sides (temporary uploads are console size).
+    const uint32_t src_scale = temporary ? 1u : source_depth ? source_depth->scale :
+        [&] { auto* e = src_depth ? nullptr : find_view(S.cb_map); return e ? e->scale : 1u; }();
+    const uint32_t dst_scale = destination_color ? destination_color->scale : destination_depth ? destination_depth->scale : 1u;
     if (src_depth && !dst_depth && !temporary && source_depth && destination_color) {
         // Depth->R32F is a numeric texture copy, not a CPU-image upload.
-        depth_to_color_pass(*source_depth, *destination_color, width, height);
+        const uint32_t pass_scale = src_scale == dst_scale ? dst_scale : 1u;
+        depth_to_color_pass(*source_depth, *destination_color, width * pass_scale, height * pass_scale);
     } else if (src_depth == dst_depth && (destination_color || destination_depth)) {
         gx2vk::Image& target = destination_color ? destination_color->image : destination_depth->image;
         if (source_image->image && target.image) {
@@ -1748,7 +1849,25 @@ void gx2_render_copy_surface(const uint8_t* src, uint32_t src_mip, uint32_t src_
             gx2vk::barrier_if_dirty();
             const VkImageAspectFlags aspect = src_depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
             const uint32_t src_w = std::max(1u, source_image->desc.width >> source_level), src_h = std::max(1u, source_image->desc.height >> source_level);
-            const uint32_t cw = std::min(width, std::min(src_w, target.desc.width)), ch = std::min(height, std::min(src_h, target.desc.height));
+            uint32_t cw = std::min(width, std::min(src_w, target.desc.width)), ch = std::min(height, std::min(src_h, target.desc.height));
+            if (src_scale != dst_scale && (source_image->desc.format == target.desc.format ||
+                gx2vk::format_is_integer(source_image->desc.format) == gx2vk::format_is_integer(target.desc.format))) {
+                // splatoon-recomp: between different resolution scales.
+                VkImageBlit blit{};
+                blit.srcSubresource = {aspect, source_level, 0, 1};
+                blit.srcOffsets[1] = {int32_t(std::min(width * src_scale, src_w)), int32_t(std::min(height * src_scale, src_h)), 1};
+                blit.dstSubresource = {aspect, 0, 0, 1};
+                blit.dstOffsets[1] = {int32_t(std::min(width * dst_scale, target.desc.width)), int32_t(std::min(height * dst_scale, target.desc.height)), 1};
+                const bool nearest = src_depth || gx2vk::format_is_integer(target.desc.format);
+                vkCmdBlitImage(cb, source_image->image, VK_IMAGE_LAYOUT_GENERAL, target.image, VK_IMAGE_LAYOUT_GENERAL, 1, &blit,
+                               nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
+                gx2vk::note_gpu_write(target);
+                S.color_targets = color_targets; S.depth_target = depth_target; bind_target_framebuffer();
+                return;
+            }
+            // Equal scales: copy the scaled extent.
+            cw = std::min(width * src_scale, std::min(src_w, target.desc.width));
+            ch = std::min(height * src_scale, std::min(src_h, target.desc.height));
             if (source_image->desc.format == target.desc.format || src_depth) {
                 if (source_image->desc.format == target.desc.format) {
                     VkImageCopy region{};

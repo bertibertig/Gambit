@@ -2682,7 +2682,13 @@ bool build_stage(uint8_t* mem, Program& prog, unsigned stage, StageDescriptors& 
         }
         // Native framebuffer coordinates keep console size; both back-ends
         // write uf_fragCoordScale = (1,1).
-        if (vk.offset_frag_coord_scale >= 0) { const float s[4] = {1, 1, 0, 0}; put(vk.offset_frag_coord_scale, s, 16); }
+        if (vk.offset_frag_coord_scale >= 0) {
+            // splatoon-recomp: on a scaled framebuffer gl_FragCoord is in native
+            // pixels; the shader sees console pixels (Cemu: 1 / render scale).
+            const float fs = 1.0f / float(framebuffer_scale(S.framebuffer));
+            const float s[4] = {fs, fs, 0, 0};
+            put(vk.offset_frag_coord_scale, s, 16);
+        }
         // Texel-coordinate fetches (guest SAMPLE with unnormalized coordinates
         // or LD) multiply the guest's raw texel coordinates by this scale.
         // Without a texture-pack replacement the bound texture keeps the
@@ -2690,7 +2696,20 @@ bool build_stage(uint8_t* mem, Program& prog, unsigned stage, StageDescriptors& 
         // LatteTexture_getEffectiveTextureScale; the GPU back-end binds the
         // same value). A zero factor collapses every such fetch onto texel 0,0.
         for (unsigned t = 0; t < 18; ++t)
-            if (vk.offset_tex_scale[t] >= 0) { const float scale[2] = {1, 1}; put(vk.offset_tex_scale[t], scale, 8); }
+            if (vk.offset_tex_scale[t] >= 0) {
+                // splatoon-recomp: a scaled render target sampled by texel
+                // coordinates needs them multiplied by its scale.
+                float ts = 1.0f;
+                const uint32_t dim = vk.texture_dim[t];
+                if (dim != 0 && dim != 1) {
+                    const uint32_t unit = (stage == 0 ? 32 : 0) + t;
+                    const uint32_t target_index = dim == 3 ? 1 : dim == 5 ? 2 : dim == 4 ? 3 : 0;
+                    if (unit < S.units.size())
+                        if (const TexObject* tex = S.units[unit][target_index]) ts = tex->splat_scale;
+                }
+                const float scale[2] = {ts, ts};
+                put(vk.offset_tex_scale[t], scale, 8);
+            }
         auto& cached = prog.ufblock_cache[stage];
         auto& span = prog.ufblock_span[stage];
         const bool changed=cached!=block;
@@ -2891,16 +2910,19 @@ bool apply_dynamic_state(VkCommandBuffer cb, VkPrimitiveTopology topology, bool 
     // Viewport: GPU UPPER_LEFT (guest top at row 0) = negative-height Vulkan
     // viewport; LOWER_LEFT (guest h < 0) = positive height.
     if (g.viewport[2] <= 0 || g.viewport[3] <= 0) return false;
+    // splatoon-recomp: viewport and scissor are console pixels; a scaled
+    // framebuffer has scale x as many.
+    const int32_t fs = int32_t(framebuffer_scale(s_active_fb));
     VkViewport vp{};
-    if (g.clip_origin == wire::UPPER_LEFT) { vp.x = float(g.viewport[0]); vp.y = float(g.viewport[1] + g.viewport[3]); vp.width = float(g.viewport[2]); vp.height = -float(g.viewport[3]); }
-    else { vp.x = float(g.viewport[0]); vp.y = float(g.viewport[1]); vp.width = float(g.viewport[2]); vp.height = float(g.viewport[3]); }
+    if (g.clip_origin == wire::UPPER_LEFT) { vp.x = float(g.viewport[0] * fs); vp.y = float((g.viewport[1] + g.viewport[3]) * fs); vp.width = float(g.viewport[2] * fs); vp.height = -float(g.viewport[3] * fs); }
+    else { vp.x = float(g.viewport[0] * fs); vp.y = float(g.viewport[1] * fs); vp.width = float(g.viewport[2] * fs); vp.height = float(g.viewport[3] * fs); }
     vp.minDepth = float(g.depth_range[0]); vp.maxDepth = float(g.depth_range[1]);
     if (!s_dyn.viewport_valid || std::memcmp(&vp, &s_dyn.viewport, sizeof(vp)) != 0) { vkCmdSetViewport(cb, 0, 1, &vp); s_dyn.viewport = vp; s_dyn.viewport_valid = true; }
     VkRect2D sc = area;
     if (g.scissor_test) {
-        const int32_t x0 = std::max(g.scissor[0], 0), y0 = std::max(g.scissor[1], 0);
-        const int32_t x1 = std::min<int32_t>(g.scissor[0] + g.scissor[2], int32_t(area.extent.width));
-        const int32_t y1 = std::min<int32_t>(g.scissor[1] + g.scissor[3], int32_t(area.extent.height));
+        const int32_t x0 = std::max(g.scissor[0], 0) * fs, y0 = std::max(g.scissor[1], 0) * fs;
+        const int32_t x1 = std::min<int32_t>((g.scissor[0] + g.scissor[2]) * fs, int32_t(area.extent.width));
+        const int32_t y1 = std::min<int32_t>((g.scissor[1] + g.scissor[3]) * fs, int32_t(area.extent.height));
         if (x1 <= x0 || y1 <= y0) return false;   // empty scissor box: nothing rasterizes
         sc = {{x0, y0}, {uint32_t(x1 - x0), uint32_t(y1 - y0)}};
     }

@@ -83,14 +83,16 @@ struct TexObject {
     TexParams params;
     uint32_t id = 0;                     // stable diagnostic id ("gl tex")
     bool complete_storage = true;        // false: GPU would have no level 0
+    float splat_scale = 1.0f;            // splatoon-recomp: resolution scale of the storage
 };
 
 struct ColorTarget {             // CBEntry
     gx2vk::Image image;
     TexObject tex;               // sampled through texture aliasing
-    uint32_t width = 0, height = 0, gx2_format = 0;
+    uint32_t width = 0, height = 0, gx2_format = 0;   // native image size (console size x scale)
     Format fmt;
     uint32_t id = 0;
+    uint32_t scale = 1;          // splatoon-recomp resolution scale (1 = console size)
 };
 struct DepthTarget {             // DepthEntry
     gx2vk::Image image;
@@ -99,6 +101,7 @@ struct DepthTarget {             // DepthEntry
     VkFormat format = VK_FORMAT_D32_SFLOAT;
     bool stencil = false;
     uint32_t id = 0;
+    uint32_t scale = 1;          // splatoon-recomp resolution scale (1 = console size)
 };
 struct Texture {                 // TexEntry
     gx2vk::Image image;
@@ -171,6 +174,11 @@ struct Framebuffer {
     bool valid = false;
     bool operator==(const Framebuffer& o) const { return colors == o.colors && depth == o.depth && depth_only == o.depth_only && valid == o.valid; }
 };
+// splatoon-recomp: resolution scale of a framebuffer (its attachments share it).
+inline uint32_t framebuffer_scale(const Framebuffer& fb) {
+    for (auto* c : fb.colors) if (c) return c->scale;
+    return fb.depth ? fb.depth->scale : 1;
+}
 
 // Native GX2 occlusion query (see gx2_render.cpp): host measurement split in
 // segments shared by all open guest queries. Vulkan queries cannot span
